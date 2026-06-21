@@ -54,11 +54,15 @@
   window.db = firebase.firestore();
   window.googleProvider = new firebase.auth.GoogleAuthProvider();
   window.ALLOWED_EMAILS = ALLOWED_EMAILS;
+
+  // הגדרת בייבל להשתמש ב-React.createElement (classic) כדי למנוע הזרקת import
+  Babel.registerPreset('react-classic', {
+    presets: [[Babel.availablePresets['react'], { runtime: 'classic' }]]
+  });
 </script>
 
 <!-- ===================== APP ===================== -->
-<script type="text/babel" data-presets="react,env">
-/* @jsxRuntime classic */
+<script type="text/babel" data-presets="react-classic,env">
 const { useState, useEffect, useMemo, useRef } = React;
 
 /* ---------- brand ---------- */
