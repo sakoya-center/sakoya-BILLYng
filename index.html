@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>חיוב חודשי · סקויה</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Karantina:wght@400;700&family=Assistant:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- React + Babel (no build step) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Excel parsing -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase (compat = global `firebase`) -->
+<script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore-compat.js"></script>
+
+<style>
+  :root{
+    --brown:#331b0f; --amber:#c97c2a; --darkGreen:#1d3a1c; --green:#569a33;
+    --salmon:#e3a399; --lavender:#cbc8db; --cream:#faf6f0;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--cream);color:var(--brown);font-family:'Assistant',system-ui,sans-serif;}
+  .kar{font-family:'Karantina',system-ui,sans-serif;}
+  input,textarea,select,button{font-family:inherit;}
+  ::-webkit-scrollbar{height:8px;width:8px;}
+  ::-webkit-scrollbar-thumb{background:var(--lavender);border-radius:4px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- ===================== FIREBASE CONFIG ===================== -->
+<!-- >>> שלב 1: הדבק כאן את ה-config מקונסולת Firebase (Project settings → Your apps → Web) -->
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyARP80ZSOi0Fo2hsC6e3llLaR2Vm1jrptw",
+    authDomain: "billyng-276f6.firebaseapp.com",
+    projectId: "billyng-276f6",
+    storageBucket: "billyng-276f6.firebasestorage.app",
+    messagingSenderId: "72948207310",
+    appId: "1:72948207310:web:9ae1c490f84e2e957b0a9f"
+  };
+
+  // >>> שלב 2: הזן את כתובות ה-Google שמורשות להיכנס (אתה ויעל). חייב להיות זהה ל-firestore.rules
+  const ALLOWED_EMAILS = ["liranahar@gmail.com", "yaelciffer@gmail.com", "main@sakoya-center.com"];
+
+  firebase.initializeApp(firebaseConfig);
+  window.auth = firebase.auth();
+  window.db = firebase.firestore();
+  window.googleProvider = new firebase.auth.GoogleAuthProvider();
+  window.ALLOWED_EMAILS = ALLOWED_EMAILS;
+</script>
+
+<!-- ===================== APP ===================== -->
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ---------- brand ---------- */
+const C = { brown:"#331b0f", amber:"#c97c2a", darkGreen:"#1d3a1c", green:"#569a33", salmon:"#e3a399", lavender:"#cbc8db", cream:"#faf6f0" };
+
+const DEFAULT_TEMPLATE =
+`שלום {שם},
+הודעה זו כוללת את סיכום הטיפולים עבור חודש {חודש}. אנו שמחים על הזכות ללוות אתכם בתהליך.
+פירוט המפגשים:
+החודש התקיימו {מספר_טיפולים} טיפולים בתאריכים: {תאריכים}.
+סך היתרה לתשלום בגין מפגשים אלו הינה:
+{סכום} ש"ח.
+נשמח לעמוד לרשותכם בכל דבר ועניין.
+תודה רבה,
+מרכז סקויה - מרחב להתפתחות`;
+
+/* ---------- helpers ---------- */
+function parseAmount(v){ if(v==null||v==="")return NaN; if(typeof v==="number")return v;
+  const c=String(v).replace(/[^\d.,-]/g,"").replace(/,/g,""); const n=parseFloat(c); return isNaN(n)?NaN:n; }
+function fmtAmount(n){ if(isNaN(n))return "—";
+  return n%1===0? n.toLocaleString("he-IL") : n.toLocaleString("he-IL",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function toDate(v){ if(v instanceof Date&&!isNaN(v))return v;
+  if(typeof v==="number")return new Date(Date.UTC(1899,11,30)+v*86400000);
+  if(typeof v==="string"){ const s=v.trim(); const m=s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
+    if(m){let y=m[3]; if(y.length===2)y="20"+y; return new Date(+y,+m[2]-1,+m[1]);} const t=Date.parse(s); if(!isNaN(t))return new Date(t);} return null; }
+function fmtDateShort(v){ const d=toDate(v); if(!d||isNaN(d))return String(v??"").trim();
+  return String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0"); }
+function normPhone(raw){ if(raw==null||raw==="")return {norm:"",valid:false,mobile:false,reason:"מספר טלפון חסר"};
+  let s=String(raw).trim().replace(/[\s\-().]/g,""); if(s.startsWith("+"))s=s.slice(1); if(s.startsWith("00"))s=s.slice(2);
+  if(s.startsWith("972")){} else if(s.startsWith("0"))s="972"+s.slice(1); else if(/^\d{9}$/.test(s))s="972"+s;
+  if(!/^972\d{9}$/.test(s))return {norm:s,valid:false,mobile:false,reason:"מספר טלפון לא תקין"};
+  if(!s.slice(3).startsWith("5"))return {norm:s,valid:true,mobile:false,reason:"ייתכן שאינו נייד"}; return {norm:s,valid:true,mobile:true}; }
+function normId(v){ const s=String(v??"").replace(/\D/g,""); return s? s.padStart(9,"0").slice(-9):""; }
+function guess(headers,exact,contains,avoid=[]){ const e=headers.find(h=>String(h).trim()===exact); if(e)return e;
+  return headers.find(h=>{const l=String(h); return contains.some(c=>l.includes(c))&&!avoid.some(a=>l.includes(a));})||""; }
+
+/* ---------- styles ---------- */
+const inputStyle={width:"100%",padding:"9px 11px",borderRadius:10,border:"1px solid #d8cabb",background:"#fff",fontSize:14,color:C.brown,outline:"none"};
+const textareaStyle={...inputStyle,lineHeight:1.6,resize:"vertical"};
+function btn(bg,fg){return {display:"inline-flex",alignItems:"center",gap:6,padding:"8px 13px",borderRadius:10,border:"1px solid "+(bg==="#fff"?"#d8cabb":bg),background:bg,color:fg,fontWeight:600,fontSize:13.5,cursor:"pointer"};}
+
+/* ---------- tiny UI ---------- */
+function Card({children}){return <div style={{background:"#fff",border:"1px solid #ece3d8",borderRadius:16,padding:18,marginBottom:16,boxShadow:"0 1px 3px rgba(51,27,15,0.05)"}}>{children}</div>;}
+function StepTitle({n,t}){return <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+  <span className="kar" style={{background:C.darkGreen,color:"#fff",width:30,height:30,borderRadius:"50%",display:"grid",placeItems:"center",fontSize:20}}>{n}</span>
+  <h2 className="kar" style={{margin:0,fontSize:28,color:C.brown}}>{t}</h2></div>;}
+function Label({children}){return <div style={{fontWeight:600,fontSize:13,marginBottom:5,color:C.brown}}>{children}</div>;}
+function ColSelect({label,value,headers,onChange}){return <div><Label>{label}</Label>
+  <select value={value} onChange={e=>onChange(e.target.value)} style={inputStyle}><option value="">— ללא —</option>
+  {headers.map(h=><option key={h} value={h}>{h}</option>)}</select></div>;}
+function NumField({label,value,onChange}){return <div><Label>{label}</Label>
+  <input type="number" value={value} onChange={e=>onChange(e.target.value)} style={{...inputStyle,width:120}}/></div>;}
+function Stat({label,value,color}){return <div style={{background:"#fff",border:"1px solid #ece3d8",borderRadius:12,padding:"10px 12px",textAlign:"center"}}>
+  <div className="kar" style={{fontSize:26,color,lineHeight:1}}>{value}</div>
+  <div style={{fontSize:12,color:"#6b5849",marginTop:3}}>{label}</div></div>;}
+
+/* ---------- auth screens ---------- */
+function Splash({text}){return <div style={{minHeight:"100vh",display:"grid",placeItems:"center"}}><div className="kar" style={{fontSize:32,color:C.darkGreen}}>{text}</div></div>;}
+function SignIn(){
+  const [err,setErr]=useState("");
+  const go=async()=>{ try{ await auth.signInWithPopup(googleProvider);}catch(e){ setErr(e.message||"שגיאת התחברות"); } };
+  return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",padding:20}}>
+    <div style={{background:"#fff",border:"1px solid #ece3d8",borderRadius:20,padding:"34px 30px",maxWidth:420,textAlign:"center",boxShadow:"0 2px 10px rgba(51,27,15,0.08)"}}>
+      <div className="kar" style={{fontSize:42,color:C.darkGreen,lineHeight:1}}>חיוב חודשי · סקויה</div>
+      <p style={{color:"#6b5849",margin:"10px 0 22px"}}>הכניסה מוגבלת לחשבונות מורשים בלבד.</p>
+      <button onClick={go} style={{...btn(C.green,"#fff"),fontSize:16,padding:"12px 22px"}}>כניסה עם חשבון Google</button>
+      {err && <div style={{color:"#b3402e",marginTop:14,fontSize:13}}>{err}</div>}
+    </div></div>;
+}
+function NoAccess({email}){
+  return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",padding:20}}>
+    <div style={{background:"#fff",border:"1px solid #e0a99e",borderRadius:20,padding:"30px",maxWidth:440,textAlign:"center"}}>
+      <div className="kar" style={{fontSize:34,color:"#b3402e"}}>אין הרשאת גישה</div>
+      <p style={{color:"#6b5849"}}>החשבון <b>{email}</b> אינו ברשימת המורשים. פנה למנהל המערכת אם זו טעות.</p>
+      <button onClick={()=>auth.signOut()} style={btn("#fff",C.brown)}>התנתק</button>
+    </div></div>;
+}
+
+/* ===================== BILLING APP ===================== */
+function Billing({user}){
+  const [rows,setRows]=useState([]); const [headers,setHeaders]=useState([]); const [fileName,setFileName]=useState("");
+  const [map,setMap]=useState({name1:"",name2:"",phone:"",amount:"",date:"",paid:"",id:""});
+  const [onlyUnpaid,setOnlyUnpaid]=useState(true);
+  const [template,setTemplate]=useState(DEFAULT_TEMPLATE);
+  const [month,setMonth]=useState("");
+  const [minAmount,setMinAmount]=useState(1); const [maxAmount,setMaxAmount]=useState(8000);
+  const [sent,setSent]=useState({}); const [edits,setEdits]=useState({}); const [editingKey,setEditingKey]=useState(null);
+  const [copied,setCopied]=useState(null); const [showSettings,setShowSettings]=useState(false);
+  const cfgLoaded=useRef(false); const fileRef=useRef(null);
+
+  /* shared settings (config/shared) */
+  useEffect(()=>{
+    const unsub=db.collection("config").doc("shared").onSnapshot(d=>{
+      if(d.exists){ const s=d.data();
+        if(s.template!=null)setTemplate(s.template);
+        if(s.minAmount!=null)setMinAmount(s.minAmount);
+        if(s.maxAmount!=null)setMaxAmount(s.maxAmount);
+        if(s.map)setMap(m=>({...m,...s.map}));
+        if(typeof s.onlyUnpaid==="boolean")setOnlyUnpaid(s.onlyUnpaid);
+      }
+      cfgLoaded.current=true;
+    },()=>{cfgLoaded.current=true;});
+    return unsub;
+  },[]);
+  /* write settings on change (after first load) */
+  useEffect(()=>{
+    if(!cfgLoaded.current)return;
+    const t=setTimeout(()=>{ db.collection("config").doc("shared").set(
+      {template,minAmount,maxAmount,map,onlyUnpaid,updatedBy:user.email,updatedAt:Date.now()},{merge:true}).catch(()=>{}); },600);
+    return ()=>clearTimeout(t);
+  },[template,minAmount,maxAmount,map,onlyUnpaid]);
+
+  /* shared sent-status per month */
+  const monthKey=(month||"current").replace(/[^\p{L}\p{N}]/gu,"_");
+  useEffect(()=>{
+    const unsub=db.collection("billing_sent").doc(monthKey).onSnapshot(d=>{
+      setSent(d.exists?(d.data().sent||{}):{});
+    },()=>{});
+    return unsub;
+  },[monthKey]);
+  function setSentRemote(key,val){
+    setSent(s=>({...s,[key]:val}));
+    db.collection("billing_sent").doc(monthKey).set({sent:{[key]:val}},{merge:true}).catch(()=>{});
+  }
+
+  function handleFile(file){
+    if(!file)return; const reader=new FileReader();
+    reader.onload=e=>{ try{
+      const data=new Uint8Array(e.target.result);
+      const wb=XLSX.read(data,{type:"array",cellDates:true});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const json=XLSX.utils.sheet_to_json(ws,{defval:""});
+      if(!json.length){alert("הקובץ ריק או לא נקרא.");return;}
+      const h=Object.keys(json[0]);
+      setRows(json); setHeaders(h); setFileName(file.name); setEdits({}); setEditingKey(null);
+      setMap(prev=>{ const keep=v=>v&&h.includes(v)?v:null; return {
+        name1:keep(prev.name1)||guess(h,"שם פרטי",["שם"],["משפחה","קובץ","מזין","סניף"]),
+        name2:keep(prev.name2)||guess(h,"שם משפחה",["משפחה"],[]),
+        phone:keep(prev.phone)||guess(h,"",["טלפון","נייד","פלאפ","סלולר","phone"],[]),
+        amount:keep(prev.amount)||guess(h,"מחיר מפגש",["לתשלום","סכום","מחיר"],["השתתפות","עובד","לגבייה"]),
+        date:keep(prev.date)||guess(h,"תאריך מפגש",["תאריך מפגש","תאריך"],["תשלום","לידה","יצירת"]),
+        paid:keep(prev.paid)||guess(h,"שולם",["שולם"],["עובד","השתתפות"]),
+        id:keep(prev.id)||guess(h,"ת.ז/מספר מזהה",["ת.ז","תז","זהות","מזהה"],["מטפל"]),
+      };});
+    }catch(err){ alert("לא הצלחתי לקרוא את הקובץ. ודא שזה Excel/CSV תקין."); } };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function buildMessage(e){
+    const dates=[...e.dates].sort((a,b)=>{const da=toDate(a),db_=toDate(b);return(da&&db_)?da-db_:0;}).map(fmtDateShort);
+    return template.replaceAll("{שם}",String(e.name??"").trim())
+      .replaceAll("{סכום}",fmtAmount(e.amount)).replaceAll("{חודש}",month||"___")
+      .replaceAll("{תאריכים}",dates.length?dates.join(", "):"—")
+      .replaceAll("{מספר_טיפולים}",String(e.count||dates.length||""));
+  }
+
+  const processed=useMemo(()=>{
+    if(!rows.length||!map.amount||(!map.name1&&!map.name2))return [];
+    let recs=rows.map(r=>{ const first=map.name1?String(r[map.name1]??"").trim():""; const last=map.name2?String(r[map.name2]??"").trim():"";
+      const ph=normPhone(map.phone?r[map.phone]:"");
+      return {name:(first+" "+last).trim(),amount:parseAmount(r[map.amount]),ph,date:map.date?r[map.date]:null,
+        paid:map.paid?String(r[map.paid]??"").trim():"",id:map.id?normId(r[map.id]):""}; });
+    if(onlyUnpaid&&map.paid)recs=recs.filter(r=>r.paid==="לא");
+    const groups={}; let noIdSum=0,noIdCount=0;
+    recs.forEach((rec,idx)=>{ const key=rec.id||rec.ph.norm||rec.name||("__"+idx);
+      if(!rec.id&&!rec.ph.norm&&!rec.name){noIdSum+=isNaN(rec.amount)?0:rec.amount;noIdCount+=1;return;}
+      if(!groups[key])groups[key]={key,name:rec.name,ph:rec.ph,id:rec.id,amount:0,dates:[],count:0};
+      const g=groups[key]; if(!g.name&&rec.name)g.name=rec.name; if(!g.ph.norm&&rec.ph.norm)g.ph=rec.ph;
+      if(!isNaN(rec.amount))g.amount+=rec.amount; if(rec.date!=null&&rec.date!=="")g.dates.push(rec.date); g.count+=1; });
+    const entries=Object.values(groups);
+    const nameCounts={},phoneCounts={};
+    entries.forEach(e=>{ if(e.name)nameCounts[e.name]=(nameCounts[e.name]||0)+1; if(e.ph.norm)phoneCounts[e.ph.norm]=(phoneCounts[e.ph.norm]||0)+1; });
+    const needsDates=template.includes("{תאריכים}");
+    const out=entries.map(e=>{ const issues=[]; let level="valid";
+      if(!e.name){issues.push("שם חסר");level="error";}
+      if(map.phone){ if(!e.ph.valid){issues.push(e.ph.reason);if(level!=="error")level="warning";}
+        else if(!e.ph.mobile){issues.push(e.ph.reason);if(level!=="error")level="warning";} }
+      if(isNaN(e.amount)){issues.push("סכום חסר/לא מספרי");level="error";}
+      else{ if(e.amount<=0){issues.push("סכום אפס או שלילי");if(level!=="error")level="warning";}
+        if(e.amount>0&&(e.amount<Number(minAmount)||e.amount>Number(maxAmount))){issues.push("סכום חריג");if(level!=="error")level="warning";} }
+      if(needsDates&&e.dates.length===0){issues.push("אין תאריכי טיפול");if(level!=="error")level="warning";}
+      if(e.name&&nameCounts[e.name]>1){issues.push("אותו שם במספר רשומות");if(level!=="error")level="warning";}
+      if(e.ph.norm&&phoneCounts[e.ph.norm]>1){issues.push("מספר טלפון כפול");if(level!=="error")level="warning";}
+      return {key:e.key,name:e.name,amount:e.amount,phone:e.ph.norm,dates:e.dates,count:e.count,issues,level,message:buildMessage(e)};
+    });
+    if(noIdCount>0)out.push({key:"__noid",name:"⚠️ "+noIdCount+" מפגשים ללא שם/ת.ז/טלפון",amount:noIdSum,dates:[],count:noIdCount,level:"error",isAlert:true,issues:["מפגשים שלא ניתן לשייך ללקוח — יש להשלים פרטים בטיפולוג"]});
+    return out;
+  },[rows,map,template,month,minAmount,maxAmount,onlyUnpaid]);
+
+  const stats=useMemo(()=>{ const real=processed.filter(p=>!p.isAlert);
+    const warn=real.filter(p=>p.level==="warning").length; const err=real.filter(p=>p.level==="error").length;
+    const sendable=real.filter(p=>p.level!=="error"); const sum=real.reduce((a,p)=>a+(isNaN(p.amount)?0:p.amount),0);
+    const sentCount=sendable.filter(p=>sent[p.key]).length;
+    return {total:real.length,warn,err,sum,sendable:sendable.length,sentCount}; },[processed,sent]);
+
+  const recon=useMemo(()=>{ if(!rows.length||!map.amount)return null; let cnt=0,sum=0;
+    rows.forEach(r=>{ const paid=map.paid?String(r[map.paid]??"").trim():""; if(onlyUnpaid&&map.paid&&paid!=="לא")return;
+      cnt+=1; const a=parseAmount(r[map.amount]); if(!isNaN(a))sum+=a; });
+    const alert=processed.find(p=>p.isAlert); const alertSum=alert?alert.amount:0; const alertCount=alert?alert.count:0;
+    const groupedSessions=processed.filter(p=>!p.isAlert).reduce((acc,p)=>acc+(p.count||0),0);
+    const ok=Math.abs(sum-(stats.sum+alertSum))<0.01&&cnt===groupedSessions+alertCount;
+    return {rawCount:cnt,rawSum:sum,groupedSessions,alertCount,alertSum,ok}; },[rows,map,onlyUnpaid,processed,stats.sum]);
+
+  const msgOf=p=>(edits[p.key]!=null?edits[p.key]:p.message);
+  async function copyMsg(p){ try{await navigator.clipboard.writeText(msgOf(p));setCopied(p.key);setTimeout(()=>setCopied(null),1400);}catch(e){alert("העתקה נחסמה בדפדפן.");} }
+
+  function exportReport(){ const head=["שם","טלפון","מס' טיפולים","תאריכים","סכום","סטטוס","נשלח","הערות"];
+    const lines=processed.filter(p=>!p.isAlert).map(p=>[p.name,p.phone,p.dates.length,
+      [...p.dates].sort((a,b)=>{const da=toDate(a),db_=toDate(b);return(da&&db_)?da-db_:0;}).map(fmtDateShort).join(" | "),
+      isNaN(p.amount)?"":p.amount, p.level==="valid"?"תקין":p.level==="warning"?"אזהרה":"שגיאה", sent[p.key]?"כן":"לא", p.issues.join("; ")]);
+    const csv="\uFEFF"+[head,...lines].map(row=>row.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="דוח_חיוב_"+(month||"חודש")+".csv"; a.click(); URL.revokeObjectURL(url); }
+
+  const mapReady=map.amount&&(map.name1||map.name2);
+  const previewRow=processed.find(p=>!p.isAlert&&p.level!=="error")||processed.find(p=>!p.isAlert);
+
+  return <div style={{maxWidth:1000,margin:"0 auto",padding:"22px 18px 60px"}}>
+    {/* top bar */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:18,flexWrap:"wrap"}}>
+      <div>
+        <h1 className="kar" style={{fontSize:44,lineHeight:1,margin:0,color:C.darkGreen}}>חיוב חודשי · סקויה</h1>
+        <p style={{margin:"6px 0 0",color:C.amber,fontWeight:600}}>נתונים משותפים ומאובטחים · כניסה עם Google · שליחה בלחיצה שלך</p>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:13,color:"#6b5849"}}>{user.email}</span>
+        <button onClick={()=>setShowSettings(s=>!s)} style={btn(showSettings?C.amber:"#fff",showSettings?"#fff":C.brown)}>⚙ הגדרות</button>
+        <button onClick={()=>auth.signOut()} style={btn("#fff",C.brown)}>התנתק</button>
+      </div>
+    </div>
+
+    {showSettings && <Card>
+      <Label>טווח סכום סביר (לזיהוי חריגים)</Label>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <NumField label="מינימום ₪" value={minAmount} onChange={setMinAmount}/>
+        <NumField label="מקסימום ₪" value={maxAmount} onChange={setMaxAmount}/>
+      </div>
+    </Card>}
+
+    <Card>
+      <StepTitle n="1" t="העלאת דוח סיכום המפגשים"/>
+      <div style={{background:"#f3f1f7",border:"1px solid "+C.lavender,borderRadius:10,padding:"9px 12px",marginBottom:12,fontSize:13.5}}>
+        יש להעלות את דוח <b>סיכום המפגשים</b> מטיפולוג (Excel/CSV) — כל שורה היא מפגש בודד, עם שם, מחיר ותאריך. הקובץ לא נשמר בענן; רק נקרא בדפדפן.</div>
+      <div onClick={()=>fileRef.current&&fileRef.current.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);}}
+        style={{border:"2px dashed "+C.amber,borderRadius:14,padding:"26px 18px",textAlign:"center",cursor:"pointer",background:"#fff"}}>
+        <div style={{fontSize:26}}>⬆️</div>
+        <div style={{marginTop:6,fontWeight:600}}>{fileName?("נטען: "+fileName):"גרור לכאן את דוח המפגשים, או לחץ לבחירה"}</div>
+        {fileName && <div style={{color:C.green,fontSize:13,marginTop:4}}>{rows.length} מפגשים נקראו</div>}
+      </div>
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={e=>handleFile(e.target.files[0])} style={{display:"none"}}/>
+    </Card>
+
+    {headers.length>0 && <Card>
+      <StepTitle n="2" t="התאמת עמודות"/>
+      <p style={{marginTop:0,color:"#6b5849",fontSize:14}}>זיהיתי אוטומטית — רק ודא שהכל נכון (בעיקר הטלפון).</p>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12}}>
+        <ColSelect label="שם פרטי" value={map.name1} headers={headers} onChange={v=>setMap(m=>({...m,name1:v}))}/>
+        <ColSelect label="שם משפחה" value={map.name2} headers={headers} onChange={v=>setMap(m=>({...m,name2:v}))}/>
+        <ColSelect label="טלפון" value={map.phone} headers={headers} onChange={v=>setMap(m=>({...m,phone:v}))}/>
+        <ColSelect label="מחיר מפגש" value={map.amount} headers={headers} onChange={v=>setMap(m=>({...m,amount:v}))}/>
+        <ColSelect label="תאריך מפגש" value={map.date} headers={headers} onChange={v=>setMap(m=>({...m,date:v}))}/>
+        <ColSelect label="ת.ז / מזהה (לקיבוץ)" value={map.id} headers={headers} onChange={v=>setMap(m=>({...m,id:v}))}/>
+        <ColSelect label="עמודת 'שולם'" value={map.paid} headers={headers} onChange={v=>setMap(m=>({...m,paid:v}))}/>
+      </div>
+      <div style={{marginTop:14,padding:"11px 13px",background:"#fdf1e3",border:"1px solid #e3c08a",borderRadius:12}}>
+        <label style={{display:"flex",gap:8,cursor:map.paid?"pointer":"not-allowed",fontSize:14,lineHeight:1.5,opacity:map.paid?1:0.5}}>
+          <input type="checkbox" checked={onlyUnpaid} disabled={!map.paid} onChange={e=>setOnlyUnpaid(e.target.checked)} style={{marginTop:3}}/>
+          <span><b>חייב רק מפגשים שטרם שולמו</b> — כל היתרה הפתוחה (שורות עם "שולם=לא"). כבה כדי לחייב את כל המפגשים.</span></label>
+      </div>
+      <div style={{marginTop:10,padding:"11px 13px",background:"#f3f1f7",border:"1px solid "+C.lavender,borderRadius:12,fontSize:13.5,lineHeight:1.5}}>
+        כל המפגשים של אותו לקוח מאוחדים אוטומטית להודעה אחת. הקיבוץ לפי ת.ז (ואם חסרה — לפי טלפון).</div>
+      <div style={{marginTop:14}}><Label>חודש החיוב (יופיע בהודעה ומגדיר את סטטוס השליחה המשותף)</Label>
+        <input value={month} onChange={e=>setMonth(e.target.value)} placeholder="לדוגמה: מאי" style={{...inputStyle,maxWidth:240}}/></div>
+    </Card>}
+
+    {mapReady && <Card>
+      <StepTitle n="3" t="עריכת ההודעה"/>
+      <Label>אפשר לערוך את נוסח ההודעה. משתנים: {"{שם}"} · {"{סכום}"} · {"{חודש}"} · {"{תאריכים}"} · {"{מספר_טיפולים}"}. השינוי משותף לכל המשתמשים.</Label>
+      <textarea value={template} onChange={e=>setTemplate(e.target.value)} rows={11} style={textareaStyle}/>
+      <button onClick={()=>setTemplate(DEFAULT_TEMPLATE)} style={{...btn("#fff",C.brown),marginTop:8,marginBottom:14}}>↺ אפס לתבנית ברירת מחדל</button>
+      {previewRow && <div><Label>תצוגה מקדימה {previewRow.name?("("+previewRow.name+")"):""}</Label>
+        <div style={{background:"#e7f4dd",border:"1px solid "+C.green,borderRadius:12,padding:14,whiteSpace:"pre-wrap",lineHeight:1.6}}>{previewRow.message}</div></div>}
+    </Card>}
+
+    {mapReady && processed.length>0 && <Card>
+      <StepTitle n="4" t="בדיקה ושליחה"/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:10,marginBottom:14}}>
+        <Stat label="סך יתרה" value={fmtAmount(stats.sum)+" ₪"} color={C.darkGreen}/>
+        <Stat label="לקוחות לשליחה" value={stats.sendable} color={C.green}/>
+        <Stat label="אזהרות" value={stats.warn} color={C.amber}/>
+        <Stat label="שגיאות" value={stats.err} color="#b3402e"/>
+        <Stat label="נשלחו" value={stats.sentCount+"/"+stats.sendable} color={C.brown}/>
+      </div>
+
+      {!map.phone && <div style={{padding:"10px 14px",borderRadius:10,marginBottom:12,background:"#f3f1f7",border:"1px solid "+C.lavender,fontWeight:600,lineHeight:1.5}}>
+        📞 אין עמודת טלפון מופה. בלחיצה על "שלח" ייפתח וואטסאפ עם ההודעה ותבחר/י את הלקוח מאנשי הקשר. כשתמצא טבלה עם טלפונים — מפה את העמודה והלינקים יפנו ישירות.</div>}
+
+      {recon && <div style={{padding:"10px 14px",borderRadius:10,marginBottom:14,fontWeight:600,lineHeight:1.5,
+        background:recon.ok?"#e7f4dd":"#fbe6e1",border:"1px solid "+(recon.ok?C.green:"#b3402e")}}>
+        {recon.ok? ("✓ בדיקת התאמה — "+recon.rawCount+" מפגשים ("+fmtAmount(recon.rawSum)+" ₪) שובצו במלואם"+(recon.alertCount?(", מתוכם "+recon.alertCount+" ללא זיהוי"):"")+". שום מפגש לא אבד ולא נספר פעמיים.")
+          : ("שים לב: סכום ההודעות אינו תואם לסכום המפגשים בקובץ — "+fmtAmount(recon.rawSum)+" ₪ מול "+fmtAmount(stats.sum+recon.alertSum)+" ₪. בדוק את מיפוי העמודות.")}</div>}
+
+      {stats.err>0 && <div style={{padding:"10px 14px",borderRadius:10,marginBottom:14,background:"#fbe6e1",border:"1px solid #b3402e",fontWeight:600}}>
+        ✕ {stats.err} לקוחות חסומים לשליחה עד לתיקון (אדום למטה)</div>}
+
+      <button onClick={exportReport} style={{...btn("#fff",C.brown),marginBottom:12}}>⬇ ייצוא דוח (CSV)</button>
+
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {processed.map(p=>{ const bg=p.level==="error"?"#fbe6e1":p.level==="warning"?"#fdf1e3":"#fff";
+          const bd=p.level==="error"?"#e0a99e":p.level==="warning"?"#e3c08a":"#ece3d8"; const isSent=!!sent[p.key];
+          return <div key={p.key} style={{border:"1px solid "+bd,background:isSent?"#eef3ea":bg,borderRadius:12,padding:"12px 14px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{width:20}}>{p.level==="error"?"✕":p.level==="warning"?"⚠️":"✓"}</div>
+              <div style={{minWidth:120,fontWeight:700}}>{p.name||"ללא שם"}</div>
+              <div style={{minWidth:85,fontWeight:700,color:C.darkGreen,direction:"ltr",textAlign:"right"}}>{fmtAmount(p.amount)} ₪</div>
+              {!p.isAlert&&p.dates.length>0 && <div style={{fontSize:12.5,color:"#6b5849"}}>📅 {p.dates.length} טיפולים</div>}
+              {!p.isAlert && <div style={{minWidth:105,color:"#6b5849",direction:"ltr",textAlign:"right",fontSize:13}}>{p.phone||"—"}</div>}
+              <div style={{flex:1}}/>
+              {!p.isAlert&&p.level!=="error" && <React.Fragment>
+                <a href={"https://wa.me/"+p.phone+"?text="+encodeURIComponent(msgOf(p))} target="_blank" rel="noopener noreferrer"
+                  onClick={()=>setSentRemote(p.key,true)} style={{...btn(isSent?"#eef3ea":C.green,isSent?C.green:"#fff"),textDecoration:"none"}}>📤 {isSent?"נשלח":"שלח בוואטסאפ"}</a>
+                <button onClick={()=>{setEditingKey(editingKey===p.key?null:p.key); if(edits[p.key]==null)setEdits(e=>({...e,[p.key]:p.message}));}}
+                  style={btn(editingKey===p.key?C.amber:"#fff",editingKey===p.key?"#fff":C.brown)}>✎ {edits[p.key]!=null?"נערך":"ערוך"}</button>
+                <button onClick={()=>copyMsg(p)} style={btn("#fff",C.brown)}>{copied===p.key?"✓":"⧉"}</button>
+                <label style={{display:"flex",alignItems:"center",gap:5,fontSize:13,cursor:"pointer"}}>
+                  <input type="checkbox" checked={isSent} onChange={e=>setSentRemote(p.key,e.target.checked)}/> סומן</label>
+              </React.Fragment>}
+            </div>
+            {editingKey===p.key&&!p.isAlert && <div style={{marginTop:10,marginRight:30}}>
+              <textarea value={edits[p.key]!=null?edits[p.key]:p.message} onChange={e=>setEdits(ed=>({...ed,[p.key]:e.target.value}))} rows={9} style={textareaStyle}/>
+              <div style={{display:"flex",gap:8,marginTop:6,flexWrap:"wrap"}}>
+                <button onClick={()=>setEditingKey(null)} style={btn(C.green,"#fff")}>✓ סיום עריכה</button>
+                <button onClick={()=>setEdits(ed=>{const c={...ed};delete c[p.key];return c;})} style={btn("#fff",C.brown)}>↺ החזר לתבנית</button>
+                <span style={{fontSize:12.5,color:"#6b5849",alignSelf:"center"}}>העריכה חלה רק על לקוח זה.</span>
+              </div></div>}
+            {!p.isAlert&&p.dates.length>0 && <div style={{marginTop:6,marginRight:30,fontSize:12.5,color:"#6b5849",direction:"ltr",textAlign:"right"}}>
+              {[...p.dates].sort((a,b)=>{const da=toDate(a),db_=toDate(b);return(da&&db_)?da-db_:0;}).map(fmtDateShort).join("  ·  ")}</div>}
+            {p.issues.length>0 && <div style={{marginTop:7,marginRight:30,fontSize:13,color:p.level==="error"?"#b3402e":"#9a6b1e",display:"flex",gap:6,flexWrap:"wrap"}}>
+              {p.issues.map((iss,k)=><span key={k} style={{background:"#fff",border:"1px solid "+bd,borderRadius:20,padding:"1px 10px"}}>{iss}</span>)}</div>}
+          </div>; })}
+      </div>
+    </Card>}
+
+    <p style={{textAlign:"center",color:"#a08c7c",fontSize:12,marginTop:24}}>
+      קובץ המפגשים נקרא בדפדפן ולא נשמר · רק ההגדרות וסטטוס השליחה משותפים ב-Firestore · אף הודעה לא נשלחת ללא לחיצה שלך</p>
+  </div>;
+}
+
+/* ---------- root ---------- */
+function App(){
+  const [user,setUser]=useState(undefined);
+  useEffect(()=>auth.onAuthStateChanged(u=>setUser(u||null)),[]);
+  if(user===undefined)return <Splash text="טוען…"/>;
+  if(!user)return <SignIn/>;
+  const allowed=(window.ALLOWED_EMAILS||[]).map(x=>x.toLowerCase()).includes((user.email||"").toLowerCase());
+  if(!allowed)return <NoAccess email={user.email}/>;
+  return <Billing user={user}/>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
